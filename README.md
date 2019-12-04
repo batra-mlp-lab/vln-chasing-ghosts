@@ -1,3 +1,133 @@
+# vln-chasing-ghosts
+
+Code for [Chasing Ghosts: Instruction Following as Bayesian State Tracking](https://arxiv.org/abs/1907.02022) published at NeurIPS 2019. 
+
+We study the problem of instruction-guided navigation, using the R2R dataset for Vision-and-Language Navigation (VLN). We notice that navigation instructions are mostly just sequenced actions ('turn left...') and observations ('...at the kitchen'). Given a sequence of actions and observations, finding the goal looks a lot like a tracking problem. So we formulate instruction following as Bayesian state tracking. This gives us:
+1. **Uncertainty**: an explicit probability for every possible trajectory the agent could take (naturally handles multimodal hypotheses); 
+2. **Interpretability**: we can inspect the predicted goal location distribution, or even the motion model or observation model separately; and
+3. **Performance**: Adding the machinery of Bayesian state tracking improves goal location prediction (compared to a similar deep net without these algorithmic priors).
+
+Click the image below for a 4 minute video overview:
+
+[![Demo video](0000E.png)](http://www.youtube.com/watch?v=eoGbescCNP0 "Demo video")
+
+This code is based on a fork of the [Matterport3D Simulator](https://github.com/peteanderson80/Matterport3DSimulator). The original README for the simulator starts [here](#matterport3d-simulator).
+
+## Reference
+
+If you use our code, please cite our paper. The first two authors contributed equally.
+
+### Bibtex:
+```bibtex
+@inproceedings{vln-chasing-ghosts,
+  title={Chasing Ghosts: Instruction Following as Bayesian State Tracking},
+  author={Peter Anderson and Ayush Shrivastava and Devi Parikh and Dhruv Batra and Stefan Lee},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2019}
+}
+```
+
+## Installation / Build Instructions
+
+We recommend using our [Dockerfile](Dockerfile).
+
+### Prerequisites
+
+- Nvidia GPU with driver >= 396.37
+- Install [docker](https://docs.docker.com/engine/installation/)
+- Install [nvidia-docker2.0](https://github.com/nvidia/nvidia-docker/wiki/Installation-(version-2.0))
+
+### Clone Repo
+
+Clone the the repository (make sure to clone with `--recursive`):
+```
+git clone --recursive https://github.com/batra-mlp-lab/vln-chasing-ghosts.git
+cd vln-chasing-ghosts
+```
+
+### Downloading Datasets
+
+Follow the instructions from the simulator under [Dataset Download](#dataset-download), [Dataset Preprocessing](#dataset-preprocessing) and [Depth Outputs](#depth-outputs) to download and preprocess the Matterport3D dataset including depth outputs.
+
+To download the Room-to-Room (R2R) dataset, run:
+```
+./tasks/R2R/data/download.sh
+```
+
+### Build the Docker and simulator
+
+Follow the [instructions from the simulator](#building-and-testing-using-docker) to build the docker, run the docker and build the simulator code.
+
+
+## Experiments
+
+Code for our model is contained in the `tracker` folder. Our model is composed of three parts:
+1. A `mapper` that builds a semantic spatial map from CNN features extracted from first-person RGB-D images;
+2. A `filter` that determines the most probable goal location in the current map by tracking the human demonstrator from observations and actions in the instruction; and
+3. A simple `policy` that conditions on the belief map to execute actions that move towards the goal location.
+
+### Setup
+
+Before running experiments, first run the docker container, mounting both this repo and the Matterport dataset:
+```
+nvidia-docker run -it --mount type=bind,source=$MATTERPORT_DATA_DIR,target=/root/mount/Matterport3DSimulator/data/v1/scans,readonly --volume `pwd`:/root/mount/Matterport3DSimulator mattersim:9.2-devel-ubuntu18.04
+```
+
+To monitor experiments using [Visdom](https://github.com/facebookresearch/visdom), install Visdom by following instructions from [here](https://github.com/facebookresearch/visdom#setup).  
+You can start the Visdom server using `python -m visdom.server -port <PORT>` .  
+
+Use `-visdom` argument to turn on Visdom logging while running experiments and configure `-visdom_server` and if necessary `-visdom_port` to change the destination Visdom server. Make sure to start the Visdom server before running experiments if using `-visdom` argument.
+
+### Goal Prediction Task 
+
+We first assess the performance of the `mapper` and the `filter` at predicting the goal location given a fixed trajectory (experiments from Section 5.2 in the paper)
+
+To train our model:
+```
+python3 tracker/train_filter.py -visdom -visdom_server $SERVER -preloading -exp_name Filter
+```
+where `$SERVER` is the hostname of the visdom server (see Setup above).
+
+To train an ablated version without heading (only 1 heading bin in the state representation instead of 4):
+```
+python3 tracker/train_filter.py -visdom -visdom_server $SERVER -preloading -heading_states 1 -exp_name FilterNoHeading
+```
+
+To train the position-visitation network (PVN) baseline (based on LingUnet):
+```
+python3 tracker/train_pvn.py -visdom -visdom_server $SERVER -preloading -map_range_x 128 -map_range_y 128 -exp_name PVN
+```
+
+By default, models are trained for 15K iterations. Each script will checkpoint the model and perform 100 validation iterations every 500 training iterations. Training can be monitored in visdom.
+
+To evaluate the trained models at a *specific checkpoint*, used the commands above but add `-eval -val_epoch $IT` where `$IT` is a selected checkpoint iteration, e.g. 11000.
+
+To evaluate the trained models across *all checkpoints* please use the scripts with the naming scheme `tracker/scripts/eval_*.sh` (after updating the name of the visdom server in each script). At iteration 11K the results should be similar to Table 1. To evaluate over 8 timesteps as in Table 1, the argument `-timesteps 8` can be added during evaluation.
+
+To evaluate the handcoded baseline, run:
+```
+python3 tracker/handcoded_baseline_.py -visdom -visdom_server $SERVER -exp_name Handcoded -timesteps 8
+```
+
+### Full Vision-and-Language Navigation Task
+
+We also assess the performance of the `mapper` and the `filter` in combination with the `policy` on the full VLN task (i.e., not just predicting the goal location, but also attempting to reach it using the trained policy). The filter and policy are trained together. To train the full model (from Section 5.3 in the paper):
+```
+python3 tracker/train_policy.py -visdom -preloading -exp_name Policy
+```
+
+To evaluate the trained model at a *specific checkpoint*:
+```
+python3 tracker/train_policy.py -visdom -preloading -exp_name Policy -eval -val_epoch $IT
+```
+where `$IT` is a selected checkpoint iteration, e.g. 11000.
+
+To evaluate the trained model across *all checkpoints* please use the script `tracker/scripts/eval_policy.sh` (after updating the name of the visdom server in the script). At the best iteration the results should be similar to Table 2.
+
+------------------------------------------------------------------------------------------
+
+*Original README for the simulator (parent repo):*
+
 # Matterport3D Simulator
 AI Research Platform for Reinforcement Learning from Real Panoramic Images.
 
